@@ -98,6 +98,9 @@ class ChecklistItem(BaseModel):
 
 
 class FieldConfidenceRecord(BaseModel):
+    field_key: str | None = None
+    selector: str | None = None
+    input_kind: str | None = None
     portal_section: str
     field_label: str
     proposed_value: str | None = None
@@ -136,6 +139,7 @@ class ComputerUseRunRequest(BaseModel):
     max_steps: int = Field(default=3, ge=1, le=8)
     allow_user_handoff: bool = False
     handoff_timeout_seconds: int = Field(default=180, ge=30, le=600)
+    field_answers: dict[str, str] = Field(default_factory=dict)
 
 
 class ComputerUseStep(BaseModel):
@@ -178,6 +182,7 @@ class AgentRequestDraft(BaseModel):
     title: str
     prompt: str
     why_needed: str
+    field_key: str | None = None
     proposed_answer: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
     source_type: SourceType | None = None
@@ -220,6 +225,7 @@ class ActionRequest(BaseModel):
     title: str
     prompt: str
     why_needed: str
+    field_key: str | None = None
     proposed_answer: str | None = None
     confidence: float | None = None
     source_type: SourceType | None = None

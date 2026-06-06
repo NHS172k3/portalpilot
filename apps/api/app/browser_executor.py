@@ -195,7 +195,7 @@ class SafeBrowserExecutor:
         try:
             return str(
                 await page.locator(
-                    "form, button, input, label, [role='dialog'], [aria-modal='true'], [id*='login' i], [class*='login' i]"
+                    "form, input, label, [role='dialog'], [aria-modal='true'], [id*='login' i], [class*='login' i]"
                 ).evaluate_all(
                     """elements => elements.map(el => [
                         el.innerText,
@@ -377,7 +377,7 @@ class SafeSyncBrowserExecutor:
         try:
             return str(
                 page.locator(
-                    "form, button, input, label, [role='dialog'], [aria-modal='true'], [id*='login' i], [class*='login' i]"
+                    "form, input, label, [role='dialog'], [aria-modal='true'], [id*='login' i], [class*='login' i]"
                 ).evaluate_all(
                     """elements => elements.map(el => [
                         el.innerText,

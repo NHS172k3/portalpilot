@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, ExternalLink, Loader2, MonitorCog, ShieldAlert, X } from "lucide-react";
-import { closeComputerUseAccessSession, getApiUrl, getFiling, isLocalApiUrl, resumeComputerUseAccessSession, startComputerUseAccessSession } from "@/lib/api";
+import { closeComputerUseAccessSession, getApiUrl, getFiling, isLocalApiUrl, resumeComputerUseAccessSession, runComputerUse, startComputerUseAccessSession } from "@/lib/api";
 import type { ComputerUseAccessSessionResponse, ComputerUseRunResponse, FilingDetail } from "@/lib/types";
 
 export function FilingDetailClient({ id }: { id: string }) {
@@ -50,9 +50,29 @@ export function FilingDetailClient({ id }: { id: string }) {
     setRunnerResult(null);
     setAccessSession(null);
     try {
+      const result = await runComputerUse(id, portal.url);
+      setRunnerResult(result);
+      setDetail(await getFiling(id));
+    } catch (err) {
+      setRunnerError(err instanceof Error ? err.message : "Could not observe form");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function openVisibleHandoff() {
+    const portal = normalizedPortalUrl();
+    if (portal.error || !portal.url) {
+      setRunnerError(portal.error || "Enter a valid official portal URL.");
+      return;
+    }
+    setRunning(true);
+    setRunnerError(null);
+    setAccessSession(null);
+    try {
       setAccessSession(await startComputerUseAccessSession(id, portal.url));
     } catch (err) {
-      setRunnerError(err instanceof Error ? err.message : "Could not start assisted browser");
+      setRunnerError(err instanceof Error ? err.message : "Could not open visible handoff");
     } finally {
       setRunning(false);
     }
@@ -105,6 +125,7 @@ export function FilingDetailClient({ id }: { id: string }) {
   }
 
   const hasBrowserObservation = detail.checklist.length > 0 || detail.fields.length > 0;
+  const needsVisibleHandoff = runnerResult?.requests.some((request) => request.request_type === "human_wall_handoff") ?? false;
 
   return (
     <>
@@ -176,6 +197,35 @@ export function FilingDetailClient({ id }: { id: string }) {
           </div>
           <ShieldAlert size={22} />
         </div>
+        <div className="section-heading">
+          <div>
+            <h3>Research recommendation</h3>
+            <p>{detail.recommendation.reason}</p>
+          </div>
+          <span className="confidence">{Math.round(detail.recommendation.confidence * 100)}%</span>
+        </div>
+        <div className="meta-line">
+          <span>{detail.recommendation.prerequisites.length} prerequisites</span>
+          {detail.recommendation.fee_expectation ? <span>Fee: {detail.recommendation.fee_expectation}</span> : null}
+          {detail.recommendation.deadline ? <span>Deadline: {detail.recommendation.deadline}</span> : null}
+        </div>
+        <div className="list">
+          {detail.recommendation.sources.map((source) => (
+            <a className="event" href={source.url} target="_blank" rel="noreferrer" key={source.url}>
+              <header>
+                <strong>{source.title}</strong>
+                <ExternalLink size={16} />
+              </header>
+              <p className="muted">{source.summary}</p>
+            </a>
+          ))}
+          {detail.recommendation.sources.length === 0 ? <div className="empty">No verified source links returned yet.</div> : null}
+        </div>
+        {detail.recommendation.warnings.length > 0 ? (
+          <div className="notice">
+            <span>{detail.recommendation.warnings.join(" ")}</span>
+          </div>
+        ) : null}
       </section>
       )}
 
@@ -183,7 +233,7 @@ export function FilingDetailClient({ id }: { id: string }) {
         <div className="section-heading">
           <div>
             <h3>Safe browser run</h3>
-            <p className="muted">OpenAI computer use opens a visible browser for access steps, then resumes only non-final portal work.</p>
+            <p className="muted">PortalPilot observes the form first. A visible browser opens only when login, CAPTCHA, MFA, or authorization is actually needed.</p>
           </div>
           <MonitorCog size={22} />
         </div>
@@ -200,10 +250,20 @@ export function FilingDetailClient({ id }: { id: string }) {
           </label>
           <button className="btn compact" onClick={startBrowserRun} disabled={running || !targetUrl.trim()}>
             {running ? <Loader2 size={17} className="spin" /> : <MonitorCog size={17} />}
-            {running ? "Working..." : "Open assisted browser"}
+            {running ? "Working..." : "Observe form"}
           </button>
         </div>
         {runnerError ? <div className="error">{runnerError}</div> : null}
+        {needsVisibleHandoff && !accessSession ? (
+          <div className="notice">
+            <strong>Human access needed.</strong>
+            <span>Open a visible browser only if you need to complete login, CAPTCHA, MFA, or authorization before the agent can resume.</span>
+            <button className="btn compact" onClick={openVisibleHandoff} disabled={running}>
+              {running ? <Loader2 size={17} className="spin" /> : <MonitorCog size={17} />}
+              Open visible handoff
+            </button>
+          </div>
+        ) : null}
         {accessSession ? (
           <div className="notice">
             <strong>Visible browser session ready.</strong>
@@ -241,7 +301,7 @@ export function FilingDetailClient({ id }: { id: string }) {
                 <p className="notice">
                   {runnerResult.user_handoff_timed_out
                     ? "The access handoff timed out before the page became safe for the agent to resume."
-                    : "A visible Chromium window was handed to you for login, CAPTCHA, MFA, or authorization."}
+                    : "You completed a visible-browser access handoff before the agent resumed."}
                 </p>
               ) : null}
               {runnerResult.current_url ? <p className="muted">Current URL: {runnerResult.current_url}</p> : null}

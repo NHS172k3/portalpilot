@@ -55,6 +55,7 @@ class InMemoryStore:
                 title=req.title,
                 prompt=req.prompt,
                 why_needed=req.why_needed,
+                field_key=req.field_key,
                 proposed_answer=req.proposed_answer,
                 confidence=req.confidence,
                 source_type=req.source_type,
@@ -153,23 +154,34 @@ class InMemoryStore:
         if not detail:
             return []
         created = now()
-        added = [
-            ActionRequest(
-                id=new_id(),
-                filing_id=filing_id,
-                filing_name=detail.card.name,
-                request_type=req.request_type,
-                title=req.title,
-                prompt=req.prompt,
-                why_needed=req.why_needed,
-                proposed_answer=req.proposed_answer,
-                confidence=req.confidence,
-                source_type=req.source_type,
-                portal_url=req.portal_url,
-                created_at=created,
+        existing_keys = {
+            (request.field_key or request.title, request.request_type)
+            for request in detail.requests
+            if request.status in {"open", "answered"}
+        }
+        added = []
+        for req in requests:
+            key = (req.field_key or req.title, req.request_type)
+            if key in existing_keys:
+                continue
+            added.append(
+                ActionRequest(
+                    id=new_id(),
+                    filing_id=filing_id,
+                    filing_name=detail.card.name,
+                    request_type=req.request_type,
+                    title=req.title,
+                    prompt=req.prompt,
+                    why_needed=req.why_needed,
+                    field_key=req.field_key,
+                    proposed_answer=req.proposed_answer,
+                    confidence=req.confidence,
+                    source_type=req.source_type,
+                    portal_url=req.portal_url,
+                    created_at=created,
+                )
             )
-            for req in requests
-        ]
+            existing_keys.add(key)
         detail.requests.extend(added)
         if activity:
             detail.activity.extend(activity)
@@ -193,23 +205,34 @@ class InMemoryStore:
             detail.card.deadline = result.recommendation.deadline
         detail.checklist = result.checklist
         detail.fields = result.fields
-        added = [
-            ActionRequest(
-                id=new_id(),
-                filing_id=filing_id,
-                filing_name=detail.card.name,
-                request_type=req.request_type,
-                title=req.title,
-                prompt=req.prompt,
-                why_needed=req.why_needed,
-                proposed_answer=req.proposed_answer,
-                confidence=req.confidence,
-                source_type=req.source_type,
-                portal_url=req.portal_url,
-                created_at=created,
+        existing_keys = {
+            (request.field_key or request.title, request.request_type)
+            for request in detail.requests
+            if request.status in {"open", "answered"}
+        }
+        added = []
+        for req in result.requests:
+            key = (req.field_key or req.title, req.request_type)
+            if key in existing_keys:
+                continue
+            added.append(
+                ActionRequest(
+                    id=new_id(),
+                    filing_id=filing_id,
+                    filing_name=detail.card.name,
+                    request_type=req.request_type,
+                    title=req.title,
+                    prompt=req.prompt,
+                    why_needed=req.why_needed,
+                    field_key=req.field_key,
+                    proposed_answer=req.proposed_answer,
+                    confidence=req.confidence,
+                    source_type=req.source_type,
+                    portal_url=req.portal_url,
+                    created_at=created,
+                )
             )
-            for req in result.requests
-        ]
+            existing_keys.add(key)
         detail.requests.extend(added)
         if result.activity:
             detail.activity.extend(result.activity)
@@ -219,6 +242,20 @@ class InMemoryStore:
         detail.card.last_agent_action = "Browser observation generated filing artifacts"
         detail.card.updated_at = created
         return added
+
+    async def field_answers_for_filing(self, filing_id: UUID) -> dict[str, str]:
+        detail = self.filings.get(filing_id)
+        if not detail:
+            return {}
+        answers: dict[str, str] = {}
+        for request in detail.requests:
+            if request.status != "answered" or not request.proposed_answer:
+                continue
+            if request.field_key:
+                answers[request.field_key] = request.proposed_answer
+            if request.title.startswith("Provide "):
+                answers[request.title.removeprefix("Provide ").strip()] = request.proposed_answer
+        return answers
 
     async def persistence_status(self) -> dict:
         return {"backend": "memory", "healthy": True, "remote_error": None, "missing_tables": []}
@@ -278,6 +315,7 @@ class SupabaseStore(InMemoryStore):
                             "title": req.title,
                             "prompt": req.prompt,
                             "why_needed": req.why_needed,
+                            "field_key": req.field_key,
                             "proposed_answer": req.proposed_answer,
                             "confidence": req.confidence,
                             "source_type": req.source_type,
@@ -292,6 +330,9 @@ class SupabaseStore(InMemoryStore):
                     [
                         {
                             "filing_id": str(detail.card.id),
+                            "field_key": field.field_key,
+                            "selector": field.selector,
+                            "input_kind": field.input_kind,
                             "portal_section": field.portal_section,
                             "field_label": field.field_label,
                             "proposed_value": field.proposed_value,
@@ -441,6 +482,9 @@ class SupabaseStore(InMemoryStore):
             checklist=[{"label": item["label"], "status": item["status"], "reason": item["reason"]} for item in checklist_rows],  # type: ignore[list-item]
             fields=[
                 {
+                    "field_key": item.get("field_key"),
+                    "selector": item.get("selector"),
+                    "input_kind": item.get("input_kind"),
                     "portal_section": item["portal_section"],
                     "field_label": item["field_label"],
                     "proposed_value": item.get("proposed_value"),
@@ -499,6 +543,32 @@ class SupabaseStore(InMemoryStore):
         except Exception as exc:
             self.remote_error = str(exc)
             return answered
+
+    async def field_answers_for_filing(self, filing_id: UUID) -> dict[str, str]:
+        answers = await super().field_answers_for_filing(filing_id)
+        try:
+            rows = (
+                self.client.table("agent_requests")
+                .select("title,field_key,proposed_answer,status")
+                .eq("filing_id", str(filing_id))
+                .eq("status", "answered")
+                .execute()
+                .data
+                or []
+            )
+            for row in rows:
+                answer = row.get("proposed_answer")
+                if not answer:
+                    continue
+                if row.get("field_key"):
+                    answers[row["field_key"]] = answer
+                title = row.get("title") or ""
+                if title.startswith("Provide "):
+                    answers[title.removeprefix("Provide ").strip()] = answer
+            self.remote_error = None
+        except Exception as exc:
+            self.remote_error = str(exc)
+        return answers
 
     async def get_profile(self) -> CompanyProfile:
         try:
@@ -585,6 +655,7 @@ class SupabaseStore(InMemoryStore):
                         "title": req.title,
                         "prompt": req.prompt,
                         "why_needed": req.why_needed,
+                        "field_key": req.field_key,
                         "proposed_answer": req.proposed_answer,
                         "confidence": req.confidence,
                         "source_type": req.source_type,
@@ -656,6 +727,9 @@ class SupabaseStore(InMemoryStore):
                     [
                         {
                             "filing_id": str(filing_id),
+                            "field_key": field.field_key,
+                            "selector": field.selector,
+                            "input_kind": field.input_kind,
                             "portal_section": field.portal_section,
                             "field_label": field.field_label,
                             "proposed_value": field.proposed_value,
@@ -678,6 +752,7 @@ class SupabaseStore(InMemoryStore):
                             "title": req.title,
                             "prompt": req.prompt,
                             "why_needed": req.why_needed,
+                            "field_key": req.field_key,
                             "proposed_answer": req.proposed_answer,
                             "confidence": req.confidence,
                             "source_type": req.source_type,
@@ -745,6 +820,7 @@ class SupabaseStore(InMemoryStore):
             title=row["title"],
             prompt=row["prompt"],
             why_needed=row["why_needed"],
+            field_key=row.get("field_key"),
             proposed_answer=row.get("proposed_answer"),
             confidence=row.get("confidence"),
             source_type=row.get("source_type"),

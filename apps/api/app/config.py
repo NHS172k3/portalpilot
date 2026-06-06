@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.4-mini"
-    computer_use_model: str = "computer-use-preview"
+    computer_use_model: str = "gpt-5.5"
     computer_use_max_steps: int = 4
     computer_use_navigation_timeout_ms: int = 45000
     supabase_url: str | None = None

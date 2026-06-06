@@ -120,6 +120,9 @@ class ComputerUseHarness:
                         )
 
                 recommendation, checklist, fields = self._observed_artifacts(page, current_url)
+                if request.field_answers:
+                    steps.extend(self._fill_known_fields(page, request.field_answers, fields, start_step=len(steps) + 1))
+                    recommendation, checklist, fields = self._observed_artifacts(page, page.url)
 
                 if not self.client:
                     return self._missing_client_response(
@@ -185,27 +188,15 @@ class ComputerUseHarness:
         user_handoff_timed_out: bool = False,
     ) -> ComputerUseRunResponse:
         reason = "OPENAI_API_KEY is missing; browser page opened, but CUA model actions were not requested."
-        steps.append(
-            ComputerUseStep(
-                step=0,
-                action_type="diagnostic",
-                status="blocked",
-                summary=reason,
-                blocked_reason=reason,
-                current_url=current_url,
-            )
-        )
-        return self._blocked_response(
-            request,
-            current_url,
-            activity,
-            steps,
-            reason,
-            self._handoff(current_url, reason, assisted=request.allow_user_handoff),
+        return self._observe_only_response(
+            request=request,
+            current_url=current_url,
+            activity=activity,
+            steps=steps,
+            reason=reason,
             recommendation=recommendation,
             checklist=checklist or [],
             fields=fields or [],
-            extra_requests=self._observed_field_requests(fields or [], current_url),
             user_handoff_used=user_handoff_used,
             user_handoff_timed_out=user_handoff_timed_out,
         )
@@ -230,8 +221,51 @@ class ComputerUseHarness:
                 user_handoff_timed_out=user_handoff_timed_out,
             )
 
+        recommendation, checklist, fields = self._observed_artifacts(page, page.url)
+        if request.field_answers:
+            steps.extend(self._fill_known_fields(page, request.field_answers, fields, start_step=len(steps) + 1))
+            recommendation, checklist, fields = self._observed_artifacts(page, page.url)
+            if not self._observed_field_requests(fields, page.url):
+                activity.append(
+                    ActivityEvent(
+                        event_type="known_answers_filled",
+                        summary="Saved answers filled into visible fields",
+                        detail="PortalPilot filled all visible non-confidential fields that had saved Action Center answers.",
+                    )
+                )
+                return ComputerUseRunResponse(
+                    status="completed",
+                    mode="deterministic_fill",
+                    target_url=request.target_url,
+                    current_url=page.url,
+                    recommendation=recommendation,
+                    checklist=checklist,
+                    fields=fields,
+                    steps=steps,
+                    requests=[],
+                    activity=activity,
+                    agents=["portalpilot-orchestrator", "playwright-deterministic-fill"],
+                    user_handoff_used=user_handoff_used,
+                    user_handoff_timed_out=user_handoff_timed_out,
+                )
+
         agent_request: AgentRequestDraft | None = None
-        response = self._initial_response(page, request)
+        try:
+            response = self._initial_response(page, request)
+        except Exception as exc:
+            recommendation, checklist, fields = self._observed_artifacts(page, page.url)
+            return self._observe_only_response(
+                request=request,
+                current_url=page.url,
+                activity=activity,
+                steps=steps,
+                reason=f"OpenAI computer-use model could not start: {exc}",
+                recommendation=recommendation,
+                checklist=checklist,
+                fields=fields,
+                user_handoff_used=user_handoff_used,
+                user_handoff_timed_out=user_handoff_timed_out,
+            )
         for index in range(min(request.max_steps, self.settings.computer_use_max_steps)):
             computer_call = self._first_computer_call(response)
             if not computer_call:
@@ -262,6 +296,17 @@ class ComputerUseHarness:
 
             action = self._action(computer_call)
             action_type = self._action_type(action)
+            if not action or action_type == "unknown":
+                steps.append(
+                    ComputerUseStep(
+                        step=index + 1,
+                        action_type="observe",
+                        status="observed",
+                        summary="Computer tool did not return an executable browser action; PortalPilot kept the observed form fields and stopped safely.",
+                        current_url=page.url,
+                    )
+                )
+                break
             summary, blocked = self.executor.execute(page, action)
             steps.append(
                 ComputerUseStep(
@@ -279,7 +324,7 @@ class ComputerUseHarness:
             response = self._followup_response(page, response, computer_call)
 
         if agent_request:
-            recommendation = self._blocked_page_recommendation(page, page.url, agent_request.why_needed)
+            recommendation, checklist, fields = self._observed_artifacts(page, page.url)
             return self._blocked_response(
                 request,
                 page.url,
@@ -288,15 +333,17 @@ class ComputerUseHarness:
                 agent_request.why_needed,
                 agent_request,
                 recommendation=recommendation,
-                checklist=[],
-                fields=[],
+                checklist=checklist,
+                fields=fields,
+                extra_requests=self._observed_field_requests(fields, page.url),
                 user_handoff_used=user_handoff_used,
                 user_handoff_timed_out=user_handoff_timed_out,
             )
 
         recommendation, checklist, fields = self._observed_artifacts(page, page.url)
+        status = "observed" if not steps or all(step.action_type == "observe" for step in steps) else "completed"
         return ComputerUseRunResponse(
-            status="completed" if steps else "observed",
+            status=status,
             mode="openai_computer_use",
             target_url=request.target_url,
             current_url=page.url,
@@ -306,7 +353,46 @@ class ComputerUseHarness:
             steps=steps,
             requests=self._observed_field_requests(fields, page.url),
             activity=activity,
-            agents=["portalpilot-orchestrator", "computer-use-preview"],
+            agents=["portalpilot-orchestrator", self.settings.computer_use_model],
+            user_handoff_used=user_handoff_used,
+            user_handoff_timed_out=user_handoff_timed_out,
+        )
+
+    def _observe_only_response(
+        self,
+        request: ComputerUseRunRequest,
+        current_url: str,
+        activity: list[ActivityEvent],
+        steps: list[ComputerUseStep],
+        reason: str,
+        recommendation: RegulatoryRecommendation | None,
+        checklist: list[ChecklistItem],
+        fields: list[FieldConfidenceRecord],
+        user_handoff_used: bool = False,
+        user_handoff_timed_out: bool = False,
+    ) -> ComputerUseRunResponse:
+        activity.append(ActivityEvent(event_type="computer_use_observed_only", summary="Browser page observed", detail=reason))
+        steps.append(
+            ComputerUseStep(
+                step=0,
+                action_type="observe",
+                status="observed",
+                summary=reason,
+                current_url=current_url,
+            )
+        )
+        return ComputerUseRunResponse(
+            status="observed",
+            mode="playwright_observe_only",
+            target_url=request.target_url,
+            current_url=current_url,
+            recommendation=recommendation,
+            checklist=checklist,
+            fields=fields,
+            steps=steps,
+            requests=self._observed_field_requests(fields, current_url),
+            activity=activity,
+            agents=["portalpilot-orchestrator", "playwright-observe-only"],
             user_handoff_used=user_handoff_used,
             user_handoff_timed_out=user_handoff_timed_out,
         )
@@ -316,14 +402,7 @@ class ComputerUseHarness:
         objective = request.objective or "Prepare this official portal page by filling only safe, non-final, non-credential business fields."
         return self.client.responses.create(  # type: ignore[union-attr]
             model=self.settings.computer_use_model,
-            tools=[
-                {
-                    "type": "computer_use_preview",
-                    "display_width": 1024,
-                    "display_height": 768,
-                    "environment": "browser",
-                }
-            ],
+            tools=[{"type": "computer"}],
             input=[
                 {
                     "role": "user",
@@ -349,14 +428,7 @@ class ComputerUseHarness:
         return self.client.responses.create(  # type: ignore[union-attr]
             model=self.settings.computer_use_model,
             previous_response_id=previous_response.id,
-            tools=[
-                {
-                    "type": "computer_use_preview",
-                    "display_width": 1024,
-                    "display_height": 768,
-                    "environment": "browser",
-                }
-            ],
+            tools=[{"type": "computer"}],
             input=[
                 {
                     "type": "computer_call_output",
@@ -404,7 +476,7 @@ class ComputerUseHarness:
             requests=[agent_request] + (extra_requests or []),
             activity=activity,
             blocked_reason=reason,
-            agents=["portalpilot-orchestrator", "computer-use-preview"],
+            agents=["portalpilot-orchestrator", self.settings.computer_use_model],
             user_handoff_used=user_handoff_used,
             user_handoff_timed_out=user_handoff_timed_out,
         )
@@ -436,16 +508,19 @@ class ComputerUseHarness:
         controls = snapshot["controls"]
         fields = [
             FieldConfidenceRecord(
-                portal_section="Observed form",
-                field_label=label,
-                proposed_value=None,
+                field_key=control.get("field_key"),
+                selector=control.get("selector"),
+                input_kind=control.get("kind"),
+                portal_section=control.get("section") or "Observed form",
+                field_label=control["label"],
+                proposed_value=control.get("value") or None,
                 source_type=SourceType.AGENT_INFERENCE,
                 confidence=1,
-                sensitivity=self._sensitivity_for_label(label),
-                status=FieldStatus.USER_REQUIRED,
-                reason="This field was visible in the browser page observed by the computer-use agent.",
+                sensitivity=self._sensitivity_for_label(control["label"]),
+                status=FieldStatus.FILLED if control.get("value") else FieldStatus.NEEDS_REVIEW if control.get("optional") else FieldStatus.USER_REQUIRED,
+                reason=self._field_reason(control),
             )
-            for label in controls
+            for control in controls
         ]
         checklist = [
             ChecklistItem(
@@ -520,7 +595,8 @@ class ComputerUseHarness:
 
     def _observed_field_requests(self, fields: list[FieldConfidenceRecord], current_url: str) -> list[AgentRequestDraft]:
         requests: list[AgentRequestDraft] = []
-        for field in fields[:8]:
+        required_fields = [field for field in fields if field.status in {FieldStatus.USER_REQUIRED, FieldStatus.NEEDS_REVIEW}]
+        for field in required_fields[:10]:
             if field.sensitivity == Sensitivity.CONFIDENTIAL:
                 continue
             requests.append(
@@ -529,6 +605,7 @@ class ComputerUseHarness:
                     title=f"Provide {field.field_label}",
                     prompt=f"What value should PortalPilot use for the visible field \"{field.field_label}\"?",
                     why_needed="This question was generated only after the browser-use agent observed the field on the current page.",
+                    field_key=field.field_key,
                     confidence=1,
                     source_type=SourceType.AGENT_INFERENCE,
                     portal_url=current_url,
@@ -536,32 +613,299 @@ class ComputerUseHarness:
             )
         return requests
 
+    def _fill_known_fields(
+        self,
+        page,
+        answers: dict[str, str],
+        fields: list[FieldConfidenceRecord],
+        start_step: int = 1,
+    ) -> list[ComputerUseStep]:
+        if not answers:
+            return []
+        handoff = self.executor.page_handoff_reason(page)
+        if handoff:
+            return [
+                ComputerUseStep(
+                    step=start_step,
+                    action_type="deterministic_fill",
+                    status="blocked",
+                    summary="Saved answers were not filled because the page is at a human-only boundary.",
+                    blocked_reason=handoff,
+                    current_url=page.url,
+                )
+            ]
+
+        normalized_answers = self._answer_lookup(answers)
+        allowed_keys = {
+            key
+            for field in fields
+            if field.sensitivity != Sensitivity.CONFIDENTIAL
+            for key in [field.field_key, self._normalize_key(field.field_label)]
+            if key
+        }
+        filtered_answers = {key: value for key, value in normalized_answers.items() if key in allowed_keys and value.strip()}
+        if not filtered_answers:
+            return []
+
+        result = page.evaluate(
+            """(answers) => {
+                const clean = (value) => String(value || "").replace(/\\*/g, "").replace(/\\s+/g, " ").trim();
+                const keyFor = (value) => clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+                const visible = (el) => {
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    const type = (el.getAttribute("type") || "").toLowerCase();
+                    return style.visibility !== "hidden" && style.display !== "none" && type !== "hidden" && rect.width >= 0 && rect.height >= 0;
+                };
+                const labelFor = (el) => {
+                    const id = el.getAttribute("id");
+                    const explicit = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
+                    const wrapped = el.closest("label");
+                    const ariaLabelledBy = (el.getAttribute("aria-labelledby") || "")
+                        .split(/\\s+/)
+                        .map((id) => document.getElementById(id)?.innerText)
+                        .filter(Boolean)
+                        .join(" ");
+                    const attrLabel = el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("title");
+                    const local = explicit?.innerText || wrapped?.innerText || ariaLabelledBy || attrLabel || "";
+                    if (clean(local)) return clean(local);
+                    const container = el.closest(".form-group, .field, .row, .section, fieldset, div");
+                    const nearby = container?.querySelector("label, legend, [class*='label' i], [class*='title' i]")?.innerText;
+                    return clean(nearby || el.getAttribute("name") || el.getAttribute("id") || "Field");
+                };
+                const sectionFor = (el) => {
+                    const section = el.closest("section, fieldset, article, [class*='section' i], [class*='panel' i], [class*='card' i]");
+                    const heading = section?.querySelector("h1,h2,h3,h4,legend")?.innerText;
+                    return clean(heading || "Observed form");
+                };
+                const fieldKeyFor = (el, label) => keyFor(`${sectionFor(el)} ${label}`);
+                const setValue = (el, value) => {
+                    const tag = el.tagName.toLowerCase();
+                    const type = (el.getAttribute("type") || tag).toLowerCase();
+                    if (["password", "hidden", "file", "submit", "button", "reset"].includes(type)) return false;
+                    if (tag === "select") {
+                        const wanted = clean(value).toLowerCase();
+                        const option = Array.from(el.options || []).find((candidate) =>
+                            clean(candidate.text).toLowerCase() === wanted || clean(candidate.value).toLowerCase() === wanted
+                        ) || Array.from(el.options || []).find((candidate) =>
+                            clean(candidate.text).toLowerCase().includes(wanted) || wanted.includes(clean(candidate.text).toLowerCase())
+                        );
+                        if (!option) return false;
+                        el.value = option.value;
+                    } else if (type === "radio") {
+                        const name = el.getAttribute("name");
+                        if (!name) return false;
+                        const peers = Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(name)}"]`)).filter(visible);
+                        const wanted = clean(value).toLowerCase();
+                        const match = peers.find((peer) =>
+                            clean(labelFor(peer)).toLowerCase() === wanted || clean(peer.value).toLowerCase() === wanted
+                        ) || peers.find((peer) =>
+                            clean(labelFor(peer)).toLowerCase().includes(wanted) || wanted.includes(clean(labelFor(peer)).toLowerCase())
+                        );
+                        if (!match) return false;
+                        match.checked = true;
+                        match.dispatchEvent(new Event("input", { bubbles: true }));
+                        match.dispatchEvent(new Event("change", { bubbles: true }));
+                        return true;
+                    } else if (type === "checkbox") {
+                        const wanted = clean(value).toLowerCase();
+                        el.checked = ["yes", "true", "checked", "1", "y"].includes(wanted);
+                    } else {
+                        el.value = value;
+                    }
+                    el.dispatchEvent(new Event("input", { bubbles: true }));
+                    el.dispatchEvent(new Event("change", { bubbles: true }));
+                    return true;
+                };
+                const filled = [];
+                const blocked = [];
+                const seenGroups = new Set();
+                for (const el of Array.from(document.querySelectorAll("input, textarea, select"))) {
+                    if (!visible(el)) continue;
+                    const type = (el.getAttribute("type") || el.tagName).toLowerCase();
+                    if (["hidden", "password", "file", "submit", "button", "reset"].includes(type)) continue;
+                    const label = labelFor(el);
+                    const fieldKey = fieldKeyFor(el, label);
+                    const labelKey = keyFor(label);
+                    const answer = answers[fieldKey] || answers[labelKey];
+                    if (!answer) continue;
+                    if ((type === "radio" || type === "checkbox") && el.name) {
+                        const groupKey = `${type}:${el.name}`;
+                        if (seenGroups.has(groupKey)) continue;
+                        seenGroups.add(groupKey);
+                    }
+                    if (setValue(el, answer)) {
+                        filled.push({ field_key: fieldKey, label, value: answer });
+                    } else {
+                        blocked.push({ field_key: fieldKey, label, reason: "No matching option or safe control found." });
+                    }
+                }
+                return { filled, blocked };
+            }""",
+            filtered_answers,
+        )
+
+        steps: list[ComputerUseStep] = []
+        for item in result.get("filled", []):
+            steps.append(
+                ComputerUseStep(
+                    step=start_step + len(steps),
+                    action_type="deterministic_fill",
+                    status="executed",
+                    summary=f"Filled {item.get('label', 'field')} from saved Action Center answer.",
+                    current_url=page.url,
+                )
+            )
+        for item in result.get("blocked", []):
+            steps.append(
+                ComputerUseStep(
+                    step=start_step + len(steps),
+                    action_type="deterministic_fill",
+                    status="blocked",
+                    summary=f"Could not fill {item.get('label', 'field')}.",
+                    blocked_reason=item.get("reason"),
+                    current_url=page.url,
+                )
+            )
+        page.wait_for_timeout(350)
+        return steps
+
+    def _answer_lookup(self, answers: dict[str, str]) -> dict[str, str]:
+        lookup: dict[str, str] = {}
+        for key, value in answers.items():
+            normalized = self._normalize_key(key)
+            if normalized and value:
+                lookup[normalized] = value
+        return lookup
+
+    def _normalize_key(self, value: str | None) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
+
+    def _field_reason(self, control: dict[str, Any]) -> str:
+        parts = [f"Visible {control.get('kind', 'field')} observed by the browser-use agent."]
+        choices = control.get("choices") or []
+        if choices:
+            parts.append("Choices: " + ", ".join(str(choice) for choice in choices[:8]) + ".")
+        if control.get("optional"):
+            parts.append("The label indicates this field is optional.")
+        return " ".join(parts)
+
     def _page_snapshot(self, page) -> dict[str, Any]:
         try:
             return page.evaluate(
                 """() => {
-                    const textFor = (el) => {
-                        const id = el.getAttribute("id");
-                        const labelled = el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("name") || "";
-                        const label = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
-                        const wrapped = el.closest("label");
-                        return (label?.innerText || wrapped?.innerText || labelled || el.textContent || "").trim();
+                    const clean = (value) => String(value || "")
+                        .replace(/\\*/g, "")
+                        .replace(/\\s+/g, " ")
+                        .trim();
+                    const keyFor = (value) => clean(value)
+                        .toLowerCase()
+                        .replace(/[^a-z0-9]+/g, "_")
+                        .replace(/^_+|_+$/g, "");
+                    const visible = (el) => {
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        const type = (el.getAttribute("type") || "").toLowerCase();
+                        return style.visibility !== "hidden" && style.display !== "none" && type !== "hidden" && rect.width >= 0 && rect.height >= 0;
                     };
-                    const controls = Array.from(document.querySelectorAll("input, textarea, select"))
-                        .filter((el) => {
-                            const style = window.getComputedStyle(el);
-                            const type = (el.getAttribute("type") || "").toLowerCase();
-                            return style.visibility !== "hidden" && style.display !== "none" && type !== "hidden";
-                        })
-                        .map(textFor)
-                        .filter(Boolean)
-                        .slice(0, 20);
+                    const labelFor = (el) => {
+                        const id = el.getAttribute("id");
+                        const explicit = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
+                        const wrapped = el.closest("label");
+                        const ariaLabelledBy = (el.getAttribute("aria-labelledby") || "")
+                            .split(/\\s+/)
+                            .map((id) => document.getElementById(id)?.innerText)
+                            .filter(Boolean)
+                            .join(" ");
+                        const attrLabel = el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("title");
+                        const local = explicit?.innerText || wrapped?.innerText || ariaLabelledBy || attrLabel || "";
+                        if (clean(local)) return clean(local);
+                        const container = el.closest(".form-group, .field, .row, .section, fieldset, div");
+                        const nearby = container?.querySelector("label, legend, [class*='label' i], [class*='title' i]")?.innerText;
+                        return clean(nearby || el.getAttribute("name") || el.getAttribute("id") || "Field");
+                    };
+                    const sectionFor = (el) => {
+                        const section = el.closest("section, fieldset, article, [class*='section' i], [class*='panel' i], [class*='card' i]");
+                        const heading = section?.querySelector("h1,h2,h3,h4,legend")?.innerText;
+                        return clean(heading || "Observed form");
+                    };
+                    const selectorFor = (el) => {
+                        const id = el.getAttribute("id");
+                        if (id) return `#${CSS.escape(id)}`;
+                        const name = el.getAttribute("name");
+                        const tag = el.tagName.toLowerCase();
+                        const type = (el.getAttribute("type") || "").toLowerCase();
+                        if (name && type) return `${tag}[type="${CSS.escape(type)}"][name="${CSS.escape(name)}"]`;
+                        if (name) return `${tag}[name="${CSS.escape(name)}"]`;
+                        const controls = Array.from(document.querySelectorAll("input, textarea, select"));
+                        const index = controls.indexOf(el);
+                        return `${tag}:nth-of-type(${Math.max(index + 1, 1)})`;
+                    };
+                    const fieldKeyFor = (el, label) => keyFor(`${sectionFor(el)} ${label}`);
+                    const choiceLabel = (el) => {
+                        const label = labelFor(el);
+                        const value = el.getAttribute("value");
+                        return clean(label || value || "Option");
+                    };
+                    const optionalFor = (el, label) => {
+                        const text = `${label} ${el.getAttribute("aria-required") || ""} ${el.required ? "required" : ""}`.toLowerCase();
+                        if (text.includes("optional")) return true;
+                        return !el.required && el.getAttribute("aria-required") !== "true";
+                    };
+                    const controls = [];
+                    const grouped = new Set();
+                    for (const el of Array.from(document.querySelectorAll("input, textarea, select"))) {
+                        if (!visible(el)) continue;
+                        const tag = el.tagName.toLowerCase();
+                        const type = (el.getAttribute("type") || tag).toLowerCase();
+                        if (type === "hidden" || type === "submit" || type === "button" || type === "reset") continue;
+                        const name = el.getAttribute("name") || el.getAttribute("id") || "";
+                        if ((type === "radio" || type === "checkbox") && name) {
+                            const key = `${type}:${name}`;
+                            if (grouped.has(key)) continue;
+                            grouped.add(key);
+                            const peers = Array.from(document.querySelectorAll(`input[type="${type}"][name="${CSS.escape(name)}"]`)).filter(visible);
+                            const container = el.closest("fieldset, .form-group, .field, .row, div");
+                            const legend = container?.querySelector("legend, [class*='question' i], [class*='label' i]")?.innerText;
+                            const label = clean(legend || name.replace(/[_-]+/g, " ").replace(/\\b\\w/g, (char) => char.toUpperCase()));
+                            const checked = peers.filter((peer) => peer.checked).map(choiceLabel).filter(Boolean).join(", ");
+                            controls.push({
+                                field_key: fieldKeyFor(el, label),
+                                selector: selectorFor(el),
+                                label,
+                                kind: type === "radio" ? "single-choice group" : "multi-choice group",
+                                section: sectionFor(el),
+                                optional: peers.every((peer) => !peer.required),
+                                choices: peers.map(choiceLabel).filter(Boolean),
+                                value: checked,
+                            });
+                            continue;
+                        }
+                        const label = labelFor(el);
+                        const choices = tag === "select"
+                            ? Array.from(el.options || []).map((option) => clean(option.text)).filter(Boolean).filter((text) => !/^select/i.test(text))
+                            : [];
+                        const selectedText = tag === "select" ? clean(el.options?.[el.selectedIndex]?.text || "") : "";
+                        controls.push({
+                            field_key: fieldKeyFor(el, label),
+                            selector: selectorFor(el),
+                            label,
+                            kind: tag === "select" ? "select" : type === "textarea" ? "textarea" : (type === "text" || type === "input") ? "input" : `${type} input`,
+                            section: sectionFor(el),
+                            optional: optionalFor(el, label),
+                            choices,
+                            value: tag === "select" ? selectedText : clean(el.value),
+                        });
+                    }
                     const heading = document.querySelector("h1,h2")?.innerText?.trim() || "";
                     return {
                         title: document.title || "",
                         heading,
                         origin: location.origin,
-                        controls: [...new Set(controls)],
+                        controls: controls
+                            .filter((control) => control.label)
+                            .filter((control, index, all) => index === all.findIndex((candidate) => candidate.label === control.label && candidate.kind === control.kind))
+                            .slice(0, 40),
                         body_excerpt: (document.body?.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 500)
                     };
                 }"""
@@ -571,7 +915,7 @@ class ComputerUseHarness:
 
     def _sensitivity_for_label(self, label: str) -> Sensitivity:
         lowered = label.lower()
-        if any(marker in lowered for marker in ["password", "otp", "mfa", "captcha", "passport", "identity", "id number", "nric"]):
+        if any(marker in lowered for marker in ["password", "otp", "mfa", "captcha", "passport", "identity", "id number", "id no", "nric"]):
             return Sensitivity.CONFIDENTIAL
         if any(marker in lowered for marker in ["email", "phone", "name", "address"]):
             return Sensitivity.PERSONAL
@@ -583,7 +927,7 @@ class ComputerUseHarness:
 
     def _first_computer_call(self, response: Any) -> Any | None:
         for item in getattr(response, "output", []) or []:
-            if self._value(item, "type") == "computer_call":
+            if str(self._value(item, "type", "")).startswith("computer"):
                 return item
         return None
 
@@ -591,10 +935,15 @@ class ComputerUseHarness:
         return self._value(computer_call, "pending_safety_checks", []) or []
 
     def _action(self, computer_call: Any) -> Any:
-        return self._value(computer_call, "action", {})
+        for key in ("action", "arguments", "input", "parameters"):
+            value = self._value(computer_call, key)
+            if value:
+                return value
+        return {}
 
     def _action_type(self, action: Any) -> str:
-        return str(self._value(action, "type", "unknown"))
+        action_type = self._value(action, "type") or self._value(action, "action") or self._value(action, "name")
+        return str(action_type or "unknown")
 
     def _output_text(self, response: Any) -> str | None:
         return getattr(response, "output_text", None)
@@ -660,53 +1009,70 @@ class _AccessSession:
                     if command != "resume" or payload is None:
                         continue
 
-                    handoff_reason = self.harness.executor.page_handoff_reason(page)
-                    activity = [
-                        ActivityEvent(
-                            event_type="user_handoff_resume_requested",
-                            summary="User requested browser-agent resume",
-                            detail="PortalPilot checked whether the visible browser had cleared the access wall.",
+                    try:
+                        handoff_reason = self.harness.executor.page_handoff_reason(page)
+                        activity = [
+                            ActivityEvent(
+                                event_type="user_handoff_resume_requested",
+                                summary="User requested browser-agent resume",
+                                detail="PortalPilot checked whether the visible browser had cleared the access wall.",
+                            )
+                        ]
+                        steps: list[ComputerUseStep] = [
+                            ComputerUseStep(
+                                step=0,
+                                action_type="user_handoff",
+                                status="completed" if not handoff_reason else "blocked",
+                                summary="User access handoff cleared" if not handoff_reason else "Access handoff is still active",
+                                blocked_reason=handoff_reason,
+                                current_url=page.url,
+                            )
+                        ]
+                        if handoff_reason:
+                            recommendation = self.harness._blocked_page_recommendation(page, page.url, handoff_reason)
+                            self.results.put(
+                                self.harness._blocked_response(
+                                    payload,
+                                    page.url,
+                                    activity,
+                                    steps,
+                                    handoff_reason,
+                                    self.harness._handoff(page.url, handoff_reason, assisted=True),
+                                    recommendation=recommendation,
+                                    checklist=[],
+                                    fields=[],
+                                    user_handoff_used=True,
+                                )
+                            )
+                            continue
+
+                        result = self.harness._drive_page(
+                            page,
+                            payload,
+                            activity,
+                            steps,
+                            assisted=True,
+                            user_handoff_used=True,
                         )
-                    ]
-                    steps: list[ComputerUseStep] = [
-                        ComputerUseStep(
-                            step=0,
-                            action_type="user_handoff",
-                            status="completed" if not handoff_reason else "blocked",
-                            summary="User access handoff cleared" if not handoff_reason else "Access handoff is still active",
-                            blocked_reason=handoff_reason,
-                            current_url=page.url,
-                        )
-                    ]
-                    if handoff_reason:
-                        recommendation = self.harness._blocked_page_recommendation(page, page.url, handoff_reason)
+                        self.results.put(result)
+                        browser.close()
+                        return
+                    except Exception as exc:
+                        reason = f"Access session resume failed: {exc}"
                         self.results.put(
                             self.harness._blocked_response(
                                 payload,
                                 page.url,
-                                activity,
-                                steps,
-                                handoff_reason,
-                                self.harness._handoff(page.url, handoff_reason, assisted=True),
-                                recommendation=recommendation,
+                                [ActivityEvent(event_type="access_session_resume_failed", summary="Browser-agent resume failed", detail=reason)],
+                                [],
+                                reason,
+                                self.harness._handoff(page.url, reason, assisted=True),
                                 checklist=[],
                                 fields=[],
                                 user_handoff_used=True,
+                                user_handoff_timed_out=True,
                             )
                         )
-                        continue
-
-                    result = self.harness._drive_page(
-                        page,
-                        payload,
-                        activity,
-                        steps,
-                        assisted=True,
-                        user_handoff_used=True,
-                    )
-                    self.results.put(result)
-                    browser.close()
-                    return
         except Exception as exc:
             reason = f"Access session failed: {exc}"
             self.ready.put(

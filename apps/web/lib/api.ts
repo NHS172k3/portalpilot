@@ -82,7 +82,7 @@ export function extractDocument(fileName: string, content: string) {
 export function runComputerUse(filingId: string, targetUrl: string) {
   return request<ComputerUseRunResponse>(`/filings/${filingId}/computer-use`, {
     method: "POST",
-    body: JSON.stringify({ target_url: targetUrl, max_steps: 3, allow_user_handoff: true, handoff_timeout_seconds: 180 }),
+    body: JSON.stringify({ target_url: targetUrl, max_steps: 3, allow_user_handoff: false, handoff_timeout_seconds: 180 }),
   });
 }
 

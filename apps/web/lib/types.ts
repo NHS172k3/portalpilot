@@ -30,6 +30,7 @@ export type ActionRequest = {
   title: string;
   prompt: string;
   why_needed: string;
+  field_key?: string | null;
   proposed_answer?: string | null;
   confidence?: number | null;
   source_type?: string | null;
@@ -60,6 +61,9 @@ export type Recommendation = {
 export type ChecklistItem = { label: string; status: string; reason: string };
 
 export type FieldConfidence = {
+  field_key?: string | null;
+  selector?: string | null;
+  input_kind?: string | null;
   portal_section: string;
   field_label: string;
   proposed_value?: string | null;
@@ -139,6 +143,7 @@ export type ComputerUseRunResponse = {
     title: string;
     prompt: string;
     why_needed: string;
+    field_key?: string | null;
     proposed_answer?: string | null;
     confidence?: number | null;
     source_type?: string | null;

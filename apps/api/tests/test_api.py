@@ -81,6 +81,49 @@ async def test_answer_request_closes_item_and_optionally_saves_to_profile():
     assert "founder@example.com" in profile.json()["filing_notes"]
 
 
+async def test_answered_field_request_is_filled_on_next_browser_run():
+    form = (
+        "data:text/html,"
+        "<html><body><h1>Registration Form</h1>"
+        "<label for='email'>Contact email</label>"
+        "<input id='email' required />"
+        "</body></html>"
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        created = await client.post(
+            "/filings/describe",
+            json={"description": "I need to prepare a business portal filing draft."},
+        )
+        filing_id = created.json()["card"]["id"]
+        observed = await client.post(
+            f"/filings/{filing_id}/computer-use",
+            json={"target_url": form, "max_steps": 1},
+        )
+        data_request = next(request for request in observed.json()["requests"] if request["request_type"] == "data_request")
+        filing_after_observation = await client.get(f"/filings/{filing_id}")
+        persisted_request = next(
+            request
+            for request in filing_after_observation.json()["requests"]
+            if request["field_key"] == data_request["field_key"]
+        )
+
+        await client.post(
+            f"/agent-requests/{persisted_request['id']}/answer",
+            json={"answer": "founder@example.com", "save_to_profile": True},
+        )
+        filled = await client.post(
+            f"/filings/{filing_id}/computer-use",
+            json={"target_url": form, "max_steps": 1},
+        )
+
+    assert filled.status_code == 200
+    body = filled.json()
+    assert any(step["action_type"] == "deterministic_fill" and step["status"] == "executed" for step in body["steps"])
+    assert body["requests"] == []
+    assert body["fields"][0]["proposed_value"] == "founder@example.com"
+    assert body["fields"][0]["status"] == "filled"
+
+
 async def test_profile_round_trip():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.put("/profile", json={"legal_name": "Example Labs", "industry_summary": "Software"})

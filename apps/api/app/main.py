@@ -105,7 +105,9 @@ def create_app() -> FastAPI:
             f"Prepare safe non-final fields for {detail.card.name}. "
             "Use field confidence records as context only when visible on the current page."
         )
-        result = await orchestrator.run_computer_use(payload.model_copy(update={"objective": objective}))
+        field_answers = await store.field_answers_for_filing(filing_id)
+        merged_answers = {**field_answers, **payload.field_answers}
+        result = await orchestrator.run_computer_use(payload.model_copy(update={"objective": objective, "field_answers": merged_answers}))
         await store.apply_computer_use_result(filing_id, result)
         return result
 
@@ -140,9 +142,11 @@ def create_app() -> FastAPI:
         objective = payload.objective or (
             f"Resume safe non-final field preparation for {detail.card.name} after user-cleared access."
         )
+        field_answers = await store.field_answers_for_filing(filing_id)
+        merged_answers = {**field_answers, **payload.field_answers}
         result = await orchestrator.resume_access_session(
             session_id,
-            payload.model_copy(update={"objective": objective, "allow_user_handoff": True}),
+            payload.model_copy(update={"objective": objective, "allow_user_handoff": True, "field_answers": merged_answers}),
             filing_id=filing_id,
         )
         await store.apply_computer_use_result(filing_id, result)
