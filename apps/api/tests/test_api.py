@@ -37,8 +37,10 @@ async def test_describe_filing_falls_back_without_openai_key():
         )
         assert response.status_code == 200
         body = response.json()
-        assert body["card"]["status"] == "needs_you"
-        assert body["requests"]
+        assert body["card"]["status"] == "not_started"
+        assert body["requests"] == []
+        assert body["fields"] == []
+        assert body["checklist"] == []
 
         filing_response = await client.get(f"/filings/{body['card']['id']}")
         dashboard_response = await client.get("/dashboard")
@@ -46,8 +48,8 @@ async def test_describe_filing_falls_back_without_openai_key():
     assert filing_response.status_code == 200
     assert dashboard_response.status_code == 200
     dashboard = dashboard_response.json()
-    assert dashboard["needs_you_count"] == 2
-    assert any(request["request_type"] == "human_wall_handoff" for request in dashboard["requests"])
+    assert dashboard["needs_you_count"] == 0
+    assert dashboard["requests"] == []
 
 
 async def test_answer_request_closes_item_and_optionally_saves_to_profile():
@@ -56,17 +58,27 @@ async def test_answer_request_closes_item_and_optionally_saves_to_profile():
             "/filings/describe",
             json={"description": "I need to register a new Singapore company after reserving a name."},
         )
-        request_id = created.json()["requests"][0]["id"]
+        filing_id = created.json()["card"]["id"]
+        observed = await client.post(
+            f"/filings/{filing_id}/computer-use",
+            json={
+                "target_url": "data:text/html,<html><body><h1>Registration Form</h1><label for='email'>Contact email</label><input id='email' /></body></html>",
+                "max_steps": 1,
+            },
+        )
+        data_request = next(request for request in observed.json()["requests"] if request["request_type"] == "data_request")
+        filing_after_observation = await client.get(f"/filings/{filing_id}")
+        persisted_request = next(request for request in filing_after_observation.json()["requests"] if request["title"] == data_request["title"])
 
         answered = await client.post(
-            f"/agent-requests/{request_id}/answer",
-            json={"answer": "Singapore, Accounting and Corporate Regulatory Authority", "save_to_profile": True},
+            f"/agent-requests/{persisted_request['id']}/answer",
+            json={"answer": "founder@example.com", "save_to_profile": True},
         )
         profile = await client.get("/profile")
 
     assert answered.status_code == 200
     assert answered.json()["status"] == "answered"
-    assert "Singapore" in profile.json()["filing_notes"]
+    assert "founder@example.com" in profile.json()["filing_notes"]
 
 
 async def test_profile_round_trip():
@@ -105,6 +117,7 @@ async def test_computer_use_route_pauses_on_login_wall():
             json={"description": "I need to prepare a business portal filing draft."},
         )
         filing_id = created.json()["card"]["id"]
+        assert created.json()["requests"] == []
         response = await client.post(
             f"/filings/{filing_id}/computer-use",
             json={
@@ -112,8 +125,12 @@ async def test_computer_use_route_pauses_on_login_wall():
                 "max_steps": 1,
             },
         )
+        filing = await client.get(f"/filings/{filing_id}")
 
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "blocked"
+    assert body["user_handoff_used"] is False
     assert body["requests"][0]["request_type"] == "human_wall_handoff"
+    assert body["recommendation"]["filing_name"] == "Sign in"
+    assert filing.json()["requests"][0]["request_type"] == "human_wall_handoff"

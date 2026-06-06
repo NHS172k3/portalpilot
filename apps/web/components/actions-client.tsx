@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { CheckCircle2, ExternalLink, Loader2, Send, ShieldAlert } from "lucide-react";
 import { answerRequest, getDashboard } from "@/lib/api";
 import type { ActionRequest } from "@/lib/types";
@@ -48,7 +49,7 @@ export function ActionsClient() {
       <div className="topline">
         <div>
           <p className="eyebrow">Agent inbox</p>
-          <h2>Clear what only a human can clear.</h2>
+          <h2>Clear browser-observed requests.</h2>
         </div>
         <span className={requests.some((request) => request.request_type === "human_wall_handoff") ? "badge danger" : "badge"}>
           {requests.length} open
@@ -56,7 +57,7 @@ export function ActionsClient() {
       </div>
       {error ? <div className="error">{error}</div> : null}
       {loading ? <div className="empty loading"><Loader2 size={22} /> Loading requests...</div> : null}
-      {!loading && requests.length === 0 ? <div className="empty"><CheckCircle2 size={24} /> No open requests.</div> : null}
+      {!loading && requests.length === 0 ? <div className="empty"><CheckCircle2 size={24} /> No browser-observed requests yet.</div> : null}
       <div className="list">
         {requests.map((request) => (
           <div className="panel request" key={request.id}>
@@ -82,7 +83,11 @@ export function ActionsClient() {
                 <span>PortalPilot will not handle credentials, MFA, legal declarations, submission, endorsement, or payment.</span>
               </div>
             ) : null}
-            {request.portal_url ? (
+            {request.request_type === "human_wall_handoff" ? (
+              <Link className="btn secondary inline-action" href={`/filings/${request.filing_id}`}>
+                Open assisted browser panel <ExternalLink size={17} />
+              </Link>
+            ) : request.portal_url ? (
               <a className="btn secondary inline-action" href={request.portal_url} target="_blank" rel="noreferrer">
                 Open handoff location <ExternalLink size={17} />
               </a>

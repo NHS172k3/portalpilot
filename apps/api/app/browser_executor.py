@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 from typing import Any
 
@@ -6,6 +7,39 @@ from playwright.async_api import Page
 from playwright.sync_api import Page as SyncPage
 
 from app.guardrails import classify_human_only
+
+ACCESS_MARKERS = (
+    r"\blog\s*in\b",
+    r"\blogin\b",
+    r"\bsign\s*in\b",
+    r"\bpassword\b",
+    r"\bcaptcha\b",
+    r"\bmfa\b",
+    r"\botp\b",
+    r"\bone[-\s]?time\b",
+    r"\bauthenticate\b",
+    r"\bauthentication\b",
+    r"\bauthorization\b",
+    r"\bauthorisation\b",
+    r"\bverification\s+code\b",
+    r"\bsecurity\s+code\b",
+    r"\bchallenge\b",
+)
+
+PAGE_HUMAN_ONLY_MARKERS = (
+    r"\bi\s+agree\b",
+    r"\bterms\s+and\s+conditions\b",
+    r"\bcertif(y|ication|ies)\b",
+    r"\bdeclaration\b",
+    r"\bstatutory\b",
+    r"\bendorse(ment|d|s)?\b",
+    r"\bfinal[-\s]?submit\b",
+    r"\bconfirm[-\s]?submission\b",
+    r"\bcontinue\s+to\s+payment\b",
+    r"\bproceed\s+to\s+payment\b",
+    r"\bmake\s+payment\b",
+    r"\bfee\s+payment\b",
+)
 
 
 def _action_value(action: Any, name: str, default: Any = None) -> Any:
@@ -16,18 +50,15 @@ def _action_value(action: Any, name: str, default: Any = None) -> Any:
 
 class SafeBrowserExecutor:
     async def page_handoff_reason(self, page: Page) -> str | None:
-        try:
-            text = await page.locator("body").inner_text(timeout=1500)
-        except Exception:
-            text = ""
-        handoff = classify_human_only(text)
-        if handoff:
-            return handoff.why_needed
         risky = await page.locator(
-            "input[type='password'], input[name*='otp' i], input[name*='mfa' i], input[name*='captcha' i]"
+            "input[type='password'], input[name*='otp' i], input[name*='mfa' i], input[name*='captcha' i], input[name*='verification' i], input[name*='challenge' i], input[autocomplete='one-time-code' i], input[id*='captcha' i], input[id*='verification' i], img[alt*='captcha' i]"
         ).count()
         if risky:
             return "Credential, CAPTCHA, MFA, or one-time-code input detected on the portal page."
+        if _has_access_marker(await self._access_control_text(page)):
+            return "Login, CAPTCHA, MFA, OTP, or authorization step detected on the portal page."
+        if _has_page_human_only_marker(await self._human_only_page_text(page)):
+            return "Declaration, endorsement, final submission, or payment step detected on the portal page."
         return None
 
     async def execute(self, page: Page, action: Any) -> tuple[str, str | None]:
@@ -160,21 +191,56 @@ class SafeBrowserExecutor:
             return f"keypress {_action_value(action, 'keys', [])}"
         return action_type
 
+    async def _access_control_text(self, page: Page) -> str:
+        try:
+            return str(
+                await page.locator(
+                    "form, button, input, label, [role='dialog'], [aria-modal='true'], [id*='login' i], [class*='login' i]"
+                ).evaluate_all(
+                    """elements => elements.map(el => [
+                        el.innerText,
+                        el.textContent,
+                        el.getAttribute('aria-label'),
+                        el.getAttribute('placeholder'),
+                        el.getAttribute('name'),
+                        el.getAttribute('id'),
+                        el.getAttribute('value')
+                    ].filter(Boolean).join(' ')).join('\\n')"""
+                )
+            )
+        except Exception:
+            return ""
+
+    async def _human_only_page_text(self, page: Page) -> str:
+        try:
+            return str(
+                await page.locator("form, button, input, label, [role='dialog'], [aria-modal='true'], main").evaluate_all(
+                    """elements => elements.map(el => [
+                        el.innerText,
+                        el.textContent,
+                        el.getAttribute('aria-label'),
+                        el.getAttribute('placeholder'),
+                        el.getAttribute('name'),
+                        el.getAttribute('id'),
+                        el.getAttribute('value')
+                    ].filter(Boolean).join(' ')).join('\\n')"""
+                )
+            )
+        except Exception:
+            return ""
+
 
 class SafeSyncBrowserExecutor:
     def page_handoff_reason(self, page: SyncPage) -> str | None:
-        try:
-            text = page.locator("body").inner_text(timeout=1500)
-        except Exception:
-            text = ""
-        handoff = classify_human_only(text)
-        if handoff:
-            return handoff.why_needed
         risky = page.locator(
-            "input[type='password'], input[name*='otp' i], input[name*='mfa' i], input[name*='captcha' i]"
+            "input[type='password'], input[name*='otp' i], input[name*='mfa' i], input[name*='captcha' i], input[name*='verification' i], input[name*='challenge' i], input[autocomplete='one-time-code' i], input[id*='captcha' i], input[id*='verification' i], img[alt*='captcha' i]"
         ).count()
         if risky:
             return "Credential, CAPTCHA, MFA, or one-time-code input detected on the portal page."
+        if _has_access_marker(self._access_control_text(page)):
+            return "Login, CAPTCHA, MFA, OTP, or authorization step detected on the portal page."
+        if _has_page_human_only_marker(self._human_only_page_text(page)):
+            return "Declaration, endorsement, final submission, or payment step detected on the portal page."
         return None
 
     def execute(self, page: SyncPage, action: Any) -> tuple[str, str | None]:
@@ -306,3 +372,51 @@ class SafeSyncBrowserExecutor:
         if action_type == "keypress":
             return f"keypress {_action_value(action, 'keys', [])}"
         return action_type
+
+    def _access_control_text(self, page: SyncPage) -> str:
+        try:
+            return str(
+                page.locator(
+                    "form, button, input, label, [role='dialog'], [aria-modal='true'], [id*='login' i], [class*='login' i]"
+                ).evaluate_all(
+                    """elements => elements.map(el => [
+                        el.innerText,
+                        el.textContent,
+                        el.getAttribute('aria-label'),
+                        el.getAttribute('placeholder'),
+                        el.getAttribute('name'),
+                        el.getAttribute('id'),
+                        el.getAttribute('value')
+                    ].filter(Boolean).join(' ')).join('\\n')"""
+                )
+            )
+        except Exception:
+            return ""
+
+    def _human_only_page_text(self, page: SyncPage) -> str:
+        try:
+            return str(
+                page.locator("form, button, input, label, [role='dialog'], [aria-modal='true'], main").evaluate_all(
+                    """elements => elements.map(el => [
+                        el.innerText,
+                        el.textContent,
+                        el.getAttribute('aria-label'),
+                        el.getAttribute('placeholder'),
+                        el.getAttribute('name'),
+                        el.getAttribute('id'),
+                        el.getAttribute('value')
+                    ].filter(Boolean).join(' ')).join('\\n')"""
+                )
+            )
+        except Exception:
+            return ""
+
+
+def _has_access_marker(text: str) -> bool:
+    lowered = text.lower()
+    return any(re.search(marker, lowered) for marker in ACCESS_MARKERS)
+
+
+def _has_page_human_only_marker(text: str) -> bool:
+    lowered = text.lower()
+    return any(re.search(marker, lowered) for marker in PAGE_HUMAN_ONLY_MARKERS)

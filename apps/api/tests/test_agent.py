@@ -1,6 +1,6 @@
 from app.agent import FilingAgent, fallback_result
 from app.config import Settings
-from app.models import FilingDescribeRequest, RequestType
+from app.models import FilingDescribeRequest, FilingStatus
 
 
 class FakeResponse:
@@ -37,10 +37,13 @@ async def test_research_falls_back_from_web_search_to_preview_without_network():
 
     assert fake_client.responses.calls[0][0]["type"] == "web_search"
     assert fake_client.responses.calls[1][0]["type"] == "web_search_preview"
-    assert any(req.request_type == RequestType.HUMAN_WALL_HANDOFF for req in result.requests)
+    assert result.requests == []
+    assert result.fields == []
+    assert result.checklist == []
+    assert result.next_status == FilingStatus.NOT_STARTED
 
 
-async def test_portal_like_research_always_gets_access_handoff():
+async def test_portal_like_research_defers_form_specific_outputs_until_browser_observation():
     request = FilingDescribeRequest(description="Prepare a portal application for a business license.")
     output = fallback_result(request, "fake")
     output.requests = []
@@ -51,5 +54,8 @@ async def test_portal_like_research_always_gets_access_handoff():
 
     result = await agent.research(request)
 
-    assert result.requests[0].request_type == RequestType.HUMAN_WALL_HANDOFF
-    assert "log in" in result.requests[0].prompt.lower()
+    assert result.requests == []
+    assert result.fields == []
+    assert result.checklist == []
+    assert result.next_status == FilingStatus.NOT_STARTED
+    assert "browser observation" in result.recommendation.reason.lower()

@@ -44,6 +44,32 @@ export type ActivityEvent = {
   detail?: string | null;
 };
 
+export type Recommendation = {
+  filing_name: string;
+  jurisdiction: string;
+  agency: string;
+  reason: string;
+  prerequisites: string[];
+  fee_expectation?: string | null;
+  deadline?: string | null;
+  warnings: string[];
+  confidence: number;
+  sources: { title: string; url: string; summary: string }[];
+};
+
+export type ChecklistItem = { label: string; status: string; reason: string };
+
+export type FieldConfidence = {
+  portal_section: string;
+  field_label: string;
+  proposed_value?: string | null;
+  source_type: string;
+  confidence: number;
+  sensitivity: string;
+  status: string;
+  reason: string;
+};
+
 export type Dashboard = {
   needs_you_count: number;
   in_progress_count: number;
@@ -55,29 +81,9 @@ export type Dashboard = {
 
 export type FilingDetail = {
   card: FilingCard;
-  recommendation: {
-    filing_name: string;
-    jurisdiction: string;
-    agency: string;
-    reason: string;
-    prerequisites: string[];
-    fee_expectation?: string | null;
-    deadline?: string | null;
-    warnings: string[];
-    confidence: number;
-    sources: { title: string; url: string; summary: string }[];
-  };
-  checklist: { label: string; status: string; reason: string }[];
-  fields: {
-    portal_section: string;
-    field_label: string;
-    proposed_value?: string | null;
-    source_type: string;
-    confidence: number;
-    sensitivity: string;
-    status: string;
-    reason: string;
-  }[];
+  recommendation: Recommendation;
+  checklist: ChecklistItem[];
+  fields: FieldConfidence[];
   requests: ActionRequest[];
   activity: ActivityEvent[];
 };
@@ -122,6 +128,11 @@ export type ComputerUseRunResponse = {
   mode: string;
   target_url: string;
   current_url?: string | null;
+  recommendation?: Recommendation | null;
+  checklist: ChecklistItem[];
+  fields: FieldConfidence[];
+  user_handoff_used: boolean;
+  user_handoff_timed_out: boolean;
   steps: ComputerUseStep[];
   requests: {
     request_type: RequestType;
@@ -136,4 +147,13 @@ export type ComputerUseRunResponse = {
   activity: ActivityEvent[];
   blocked_reason?: string | null;
   agents: string[];
+};
+
+export type ComputerUseAccessSessionResponse = {
+  session_id: string;
+  status: string;
+  target_url: string;
+  current_url?: string | null;
+  handoff_reason?: string | null;
+  prompt: string;
 };

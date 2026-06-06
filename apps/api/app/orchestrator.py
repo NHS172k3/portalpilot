@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from agents import Agent
 
 from app.agent import FilingAgent
@@ -7,6 +9,7 @@ from app.models import (
     AgentResearchResult,
     ComputerUseRunRequest,
     ComputerUseRunResponse,
+    ComputerUseAccessSessionResponse,
     DocumentExtractRequest,
     DocumentExtractResponse,
     FilingDescribeRequest,
@@ -49,6 +52,22 @@ class PortalPilotOrchestrator:
         result = await self.computer_use_service.run(request)
         result.agents = self.agent_names
         return result
+
+    async def start_access_session(self, request: ComputerUseRunRequest, filing_id: UUID | None = None) -> ComputerUseAccessSessionResponse:
+        return await self.computer_use_service.start_access_session(request, filing_id=filing_id)
+
+    async def resume_access_session(
+        self,
+        session_id: str,
+        request: ComputerUseRunRequest,
+        filing_id: UUID | None = None,
+    ) -> ComputerUseRunResponse:
+        result = await self.computer_use_service.resume_access_session(session_id, request, filing_id=filing_id)
+        result.agents = self.agent_names
+        return result
+
+    async def close_access_session(self, session_id: str, filing_id: UUID | None = None) -> bool:
+        return await self.computer_use_service.close_access_session(session_id, filing_id=filing_id)
 
     def _agent_activity(self, run_type: str, agent_name: str):
         from app.models import ActivityEvent

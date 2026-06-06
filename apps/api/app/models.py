@@ -134,6 +134,8 @@ class ComputerUseRunRequest(BaseModel):
     target_url: str = Field(min_length=8, max_length=2048)
     objective: str | None = Field(default=None, max_length=1000)
     max_steps: int = Field(default=3, ge=1, le=8)
+    allow_user_handoff: bool = False
+    handoff_timeout_seconds: int = Field(default=180, ge=30, le=600)
 
 
 class ComputerUseStep(BaseModel):
@@ -150,11 +152,25 @@ class ComputerUseRunResponse(BaseModel):
     mode: str
     target_url: str
     current_url: str | None = None
+    recommendation: RegulatoryRecommendation | None = None
+    checklist: list[ChecklistItem] = Field(default_factory=list)
+    fields: list[FieldConfidenceRecord] = Field(default_factory=list)
+    user_handoff_used: bool = False
+    user_handoff_timed_out: bool = False
     steps: list[ComputerUseStep] = Field(default_factory=list)
     requests: list[AgentRequestDraft] = Field(default_factory=list)
     activity: list[ActivityEvent] = Field(default_factory=list)
     blocked_reason: str | None = None
     agents: list[str] = Field(default_factory=list)
+
+
+class ComputerUseAccessSessionResponse(BaseModel):
+    session_id: str
+    status: str
+    target_url: str
+    current_url: str | None = None
+    handoff_reason: str | None = None
+    prompt: str
 
 
 class AgentRequestDraft(BaseModel):

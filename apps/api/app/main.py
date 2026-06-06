@@ -8,6 +8,7 @@ from app.models import (
     ActionRequest,
     AnswerRequest,
     CompanyProfile,
+    ComputerUseAccessSessionResponse,
     ComputerUseRunRequest,
     ComputerUseRunResponse,
     Dashboard,
@@ -105,9 +106,59 @@ def create_app() -> FastAPI:
             "Use field confidence records as context only when visible on the current page."
         )
         result = await orchestrator.run_computer_use(payload.model_copy(update={"objective": objective}))
-        if result.requests:
-            await store.append_agent_requests(filing_id, result.requests, activity=result.activity)
+        await store.apply_computer_use_result(filing_id, result)
         return result
+
+    @app.post("/filings/{filing_id}/computer-use/access-session", response_model=ComputerUseAccessSessionResponse)
+    async def start_computer_use_access_session(
+        filing_id: UUID,
+        payload: ComputerUseRunRequest,
+        store: InMemoryStore = Depends(store_dep),
+    ):
+        detail = await store.filing(filing_id)
+        if not detail:
+            raise HTTPException(status_code=404, detail="Filing not found")
+        objective = payload.objective or (
+            f"Prepare safe non-final fields for {detail.card.name}. "
+            "Wait for the user to complete login, CAPTCHA, MFA, or authorization before resuming."
+        )
+        return await orchestrator.start_access_session(
+            payload.model_copy(update={"objective": objective, "allow_user_handoff": True}),
+            filing_id=filing_id,
+        )
+
+    @app.post("/filings/{filing_id}/computer-use/access-session/{session_id}/resume", response_model=ComputerUseRunResponse)
+    async def resume_computer_use_access_session(
+        filing_id: UUID,
+        session_id: str,
+        payload: ComputerUseRunRequest,
+        store: InMemoryStore = Depends(store_dep),
+    ):
+        detail = await store.filing(filing_id)
+        if not detail:
+            raise HTTPException(status_code=404, detail="Filing not found")
+        objective = payload.objective or (
+            f"Resume safe non-final field preparation for {detail.card.name} after user-cleared access."
+        )
+        result = await orchestrator.resume_access_session(
+            session_id,
+            payload.model_copy(update={"objective": objective, "allow_user_handoff": True}),
+            filing_id=filing_id,
+        )
+        await store.apply_computer_use_result(filing_id, result)
+        return result
+
+    @app.delete("/filings/{filing_id}/computer-use/access-session/{session_id}")
+    async def close_computer_use_access_session(
+        filing_id: UUID,
+        session_id: str,
+        store: InMemoryStore = Depends(store_dep),
+    ):
+        detail = await store.filing(filing_id)
+        if not detail:
+            raise HTTPException(status_code=404, detail="Filing not found")
+        closed = await orchestrator.close_access_session(session_id, filing_id=filing_id)
+        return {"closed": closed}
 
     return app
 

@@ -1,6 +1,19 @@
-import type { CompanyProfile, ComputerUseRunResponse, Dashboard, DocumentExtractResponse, FilingDetail } from "@/lib/types";
+import type { CompanyProfile, ComputerUseAccessSessionResponse, ComputerUseRunResponse, Dashboard, DocumentExtractResponse, FilingDetail } from "@/lib/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+export function getApiUrl() {
+  return API_URL;
+}
+
+export function isLocalApiUrl() {
+  try {
+    const host = new URL(API_URL).hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return false;
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
@@ -69,6 +82,26 @@ export function extractDocument(fileName: string, content: string) {
 export function runComputerUse(filingId: string, targetUrl: string) {
   return request<ComputerUseRunResponse>(`/filings/${filingId}/computer-use`, {
     method: "POST",
-    body: JSON.stringify({ target_url: targetUrl, max_steps: 3 }),
+    body: JSON.stringify({ target_url: targetUrl, max_steps: 3, allow_user_handoff: true, handoff_timeout_seconds: 180 }),
+  });
+}
+
+export function startComputerUseAccessSession(filingId: string, targetUrl: string) {
+  return request<ComputerUseAccessSessionResponse>(`/filings/${filingId}/computer-use/access-session`, {
+    method: "POST",
+    body: JSON.stringify({ target_url: targetUrl, max_steps: 3, allow_user_handoff: true, handoff_timeout_seconds: 300 }),
+  });
+}
+
+export function resumeComputerUseAccessSession(filingId: string, sessionId: string, targetUrl: string) {
+  return request<ComputerUseRunResponse>(`/filings/${filingId}/computer-use/access-session/${sessionId}/resume`, {
+    method: "POST",
+    body: JSON.stringify({ target_url: targetUrl, max_steps: 3, allow_user_handoff: true, handoff_timeout_seconds: 300 }),
+  });
+}
+
+export function closeComputerUseAccessSession(filingId: string, sessionId: string) {
+  return request<{ closed: boolean }>(`/filings/${filingId}/computer-use/access-session/${sessionId}`, {
+    method: "DELETE",
   });
 }

@@ -48,69 +48,35 @@ def _safe_excerpt(value: str, max_chars: int = 180) -> str:
 
 
 def fallback_result(request: FilingDescribeRequest, reason: str) -> AgentResearchResult:
-    filing_name = "User-described filing"
-    if "singapore" in request.description.lower() and "compan" in request.description.lower():
-        filing_name = "Register a new business entity"
-
     return AgentResearchResult(
         recommendation=RegulatoryRecommendation(
-            filing_name=filing_name,
-            jurisdiction="To verify",
-            agency="Official agency to verify",
-            reason=f"OpenAI research was unavailable, so PortalPilot created a conservative draft from the user's request. Reason: {reason}",
-            prerequisites=["Confirm the responsible agency", "Confirm required account access", "Gather company profile details"],
-            fee_expectation="Verify on the official portal before payment",
+            filing_name="Browser-observed filing",
+            jurisdiction="Pending browser observation",
+            agency="Pending browser observation",
+            reason=(
+                "PortalPilot created a tracking card from the user's filing description. "
+                "Recommendation, readiness, form fields, and questions are generated only after the browser-use agent observes the form."
+            ),
+            prerequisites=[],
+            fee_expectation=None,
             deadline="Not determined",
-            warnings=["Official-source research must be rerun before relying on this filing plan."],
-            confidence=0.35,
+            warnings=[],
+            confidence=0,
             sources=[
                 OfficialSource(
-                    title="User filing request",
+                    title="User filing description",
                     url="https://example.invalid/user-request",
                     summary=_safe_excerpt(request.description, 240),
                 )
             ],
         ),
-        checklist=[
-            ChecklistItem(label="Confirm official portal and agency", status=FieldStatus.USER_REQUIRED, reason="Live research was unavailable."),
-            ChecklistItem(label="Prepare company profile facts", status=FieldStatus.NEEDS_REVIEW, reason="Reusable profile facts are needed before filling."),
-            ChecklistItem(label="Identify human-only walls", status=FieldStatus.USER_REQUIRED, reason="Credentials, declarations, submission, and payment stay with the human."),
-        ],
-        fields=[
-            FieldConfidenceRecord(
-                portal_section="General",
-                field_label="Filing objective",
-                proposed_value=_safe_excerpt(request.description, 400),
-                source_type=SourceType.FILING_CONTEXT,
-                confidence=0.75,
-                sensitivity=Sensitivity.BUSINESS,
-                status=FieldStatus.NEEDS_REVIEW,
-                reason="Directly supplied by the user.",
-            )
-        ],
-        requests=[
-            AgentRequestDraft(
-                request_type=RequestType.HUMAN_WALL_HANDOFF,
-                title="Log in to the official portal",
-                prompt="Open the official filing portal, log in with the business account, complete any authentication/MFA/CAPTCHA, and stop before any declaration, endorsement, payment, or final submission.",
-                why_needed="PortalPilot can prepare and fill non-final fields, but credentialed access and legally binding portal steps remain human-only.",
-                confidence=1,
-                source_type=SourceType.OFFICIAL_SOURCE,
-            ),
-            AgentRequestDraft(
-                request_type=RequestType.DATA_REQUEST,
-                title="Confirm filing jurisdiction",
-                prompt="Which jurisdiction and official agency should PortalPilot use for this filing?",
-                why_needed="The research agent could not verify official sources in this run.",
-                confidence=0.35,
-                source_type=SourceType.FILING_CONTEXT,
-            )
-        ],
+        checklist=[],
+        fields=[],
+        requests=[],
         activity=[
-            ActivityEvent(event_type="agent_run_started", summary="Agent run started", detail="Created from user-described filing."),
-            ActivityEvent(event_type="request_emitted", summary="Human confirmation needed", detail="OpenAI research was unavailable."),
+            ActivityEvent(event_type="filing_added", summary="Filing tracking card created", detail="Waiting for browser observation before asking questions."),
         ],
-        next_status=FilingStatus.NEEDS_YOU,
+        next_status=FilingStatus.NOT_STARTED,
     )
 
 
@@ -217,9 +183,7 @@ class FilingAgent:
             )
             raw = response.output_text
             result = AgentResearchResult.model_validate_json(raw)
-            result.requests = self._enforce_boundaries(result)
-            if result.requests and result.next_status == FilingStatus.IN_PROGRESS:
-                result.next_status = FilingStatus.NEEDS_YOU
+            result = self._defer_form_specific_outputs(result)
             return result
         except Exception as exc:
             return fallback_result(request, str(exc))
@@ -304,6 +268,24 @@ class FilingAgent:
                 ),
             )
         return requests
+
+    def _defer_form_specific_outputs(self, result: AgentResearchResult) -> AgentResearchResult:
+        result.recommendation.reason = (
+            f"{result.recommendation.reason} "
+            "PortalPilot will wait for browser observation before producing readiness, form fields, or user questions."
+        )
+        result.checklist = []
+        result.fields = []
+        result.requests = []
+        result.next_status = FilingStatus.NOT_STARTED
+        result.activity.append(
+            ActivityEvent(
+                event_type="browser_observation_required",
+                summary="Waiting for browser observation",
+                detail="No user questions or form fields were emitted before the browser-use agent observed the form.",
+            )
+        )
+        return result
 
     def _portal_access_likely(self, result: AgentResearchResult) -> bool:
         text = " ".join(

@@ -63,7 +63,7 @@ class InMemoryStore:
             )
             for req in result.requests
         ]
-        progress = 55 if result.next_status == FilingStatus.NEEDS_YOU else 35
+        progress = 10 if result.next_status == FilingStatus.NOT_STARTED else 55 if result.next_status == FilingStatus.NEEDS_YOU else 35
         card = FilingCard(
             id=filing_id,
             name=result.recommendation.filing_name,
@@ -178,6 +178,46 @@ class InMemoryStore:
             detail.card.status = FilingStatus.NEEDS_YOU
             detail.card.last_agent_action = "Computer-use run paused for human review"
             detail.card.updated_at = created
+        return added
+
+    async def apply_computer_use_result(self, filing_id: UUID, result) -> list[ActionRequest]:
+        detail = self.filings.get(filing_id)
+        if not detail:
+            return []
+        created = now()
+        if result.recommendation:
+            detail.recommendation = result.recommendation
+            detail.card.name = result.recommendation.filing_name
+            detail.card.jurisdiction = result.recommendation.jurisdiction
+            detail.card.agency = result.recommendation.agency
+            detail.card.deadline = result.recommendation.deadline
+        detail.checklist = result.checklist
+        detail.fields = result.fields
+        added = [
+            ActionRequest(
+                id=new_id(),
+                filing_id=filing_id,
+                filing_name=detail.card.name,
+                request_type=req.request_type,
+                title=req.title,
+                prompt=req.prompt,
+                why_needed=req.why_needed,
+                proposed_answer=req.proposed_answer,
+                confidence=req.confidence,
+                source_type=req.source_type,
+                portal_url=req.portal_url,
+                created_at=created,
+            )
+            for req in result.requests
+        ]
+        detail.requests.extend(added)
+        if result.activity:
+            detail.activity.extend(result.activity)
+        detail.card.open_requests = len([item for item in detail.requests if item.status == "open"])
+        detail.card.status = FilingStatus.NEEDS_YOU if detail.card.open_requests else FilingStatus.READY_FOR_REVIEW
+        detail.card.progress = 70 if detail.card.open_requests else 85
+        detail.card.last_agent_action = "Browser observation generated filing artifacts"
+        detail.card.updated_at = created
         return added
 
     async def persistence_status(self) -> dict:
@@ -570,6 +610,104 @@ class SupabaseStore(InMemoryStore):
                 {
                     "status": FilingStatus.NEEDS_YOU,
                     "last_agent_action": "Computer-use run paused for human review",
+                    "updated_at": now().isoformat(),
+                }
+            ).eq("id", str(filing_id)).execute()
+            self.remote_error = None
+        except Exception as exc:
+            self.remote_error = str(exc)
+        return added
+
+    async def apply_computer_use_result(self, filing_id: UUID, result) -> list[ActionRequest]:
+        added = await super().apply_computer_use_result(filing_id, result)
+        try:
+            detail = await super().filing(filing_id)
+            if not detail:
+                return added
+            if result.recommendation:
+                self.client.table("regulatory_recommendations").delete().eq("filing_id", str(filing_id)).execute()
+                self.client.table("regulatory_recommendations").insert(
+                    {
+                        "filing_id": str(filing_id),
+                        "reason": result.recommendation.reason,
+                        "prerequisites": result.recommendation.prerequisites,
+                        "fee_expectation": result.recommendation.fee_expectation,
+                        "warnings": result.recommendation.warnings,
+                        "confidence": result.recommendation.confidence,
+                        "sources": [source.model_dump() for source in result.recommendation.sources],
+                    }
+                ).execute()
+            self.client.table("readiness_checklist_items").delete().eq("filing_id", str(filing_id)).execute()
+            if result.checklist:
+                self.client.table("readiness_checklist_items").insert(
+                    [
+                        {
+                            "filing_id": str(filing_id),
+                            "label": item.label,
+                            "status": item.status,
+                            "reason": item.reason,
+                        }
+                        for item in result.checklist
+                    ]
+                ).execute()
+            self.client.table("field_confidence_records").delete().eq("filing_id", str(filing_id)).execute()
+            if result.fields:
+                self.client.table("field_confidence_records").insert(
+                    [
+                        {
+                            "filing_id": str(filing_id),
+                            "portal_section": field.portal_section,
+                            "field_label": field.field_label,
+                            "proposed_value": field.proposed_value,
+                            "source_type": field.source_type,
+                            "confidence": field.confidence,
+                            "sensitivity": field.sensitivity,
+                            "status": field.status,
+                            "reason": field.reason,
+                        }
+                        for field in result.fields
+                    ]
+                ).execute()
+            if added:
+                self.client.table("agent_requests").insert(
+                    [
+                        {
+                            "id": str(req.id),
+                            "filing_id": str(req.filing_id),
+                            "request_type": req.request_type,
+                            "title": req.title,
+                            "prompt": req.prompt,
+                            "why_needed": req.why_needed,
+                            "proposed_answer": req.proposed_answer,
+                            "confidence": req.confidence,
+                            "source_type": req.source_type,
+                            "portal_url": req.portal_url,
+                            "status": req.status,
+                        }
+                        for req in added
+                    ]
+                ).execute()
+            if result.activity:
+                self.client.table("activity_events").insert(
+                    [
+                        {
+                            "filing_id": str(filing_id),
+                            "event_type": event.event_type,
+                            "summary": event.summary,
+                            "detail": event.detail,
+                        }
+                        for event in result.activity
+                    ]
+                ).execute()
+            self.client.table("filings").update(
+                {
+                    "name": detail.card.name,
+                    "jurisdiction": detail.card.jurisdiction,
+                    "agency": detail.card.agency,
+                    "status": detail.card.status,
+                    "progress": detail.card.progress,
+                    "last_agent_action": detail.card.last_agent_action,
+                    "deadline": detail.card.deadline,
                     "updated_at": now().isoformat(),
                 }
             ).eq("id", str(filing_id)).execute()

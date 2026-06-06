@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, Bot, FilePlus2, Loader2, Send, ShieldAlert } from "lucide-react";
 import { createFiling, getDashboard } from "@/lib/api";
@@ -14,6 +15,7 @@ const columns: { status: FilingStatus; label: string }[] = [
 ];
 
 export function DashboardClient() {
+  const router = useRouter();
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [description, setDescription] = useState("");
   const [companyContext, setCompanyContext] = useState("");
@@ -41,8 +43,11 @@ export function DashboardClient() {
     setSubmitting(true);
     setError(null);
     try {
-      await createFiling(description, companyContext);
+      const created = await createFiling(description, companyContext);
+      setDescription("");
+      setCompanyContext("");
       await refresh();
+      router.push(`/filings/${created.card.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create filing");
     } finally {
@@ -72,7 +77,7 @@ export function DashboardClient() {
           <div>
             <h3>User-added filing</h3>
             <p className="muted">
-              PortalPilot researches official sources, drafts a filing plan, and pauses only for missing facts or human-only walls.
+              PortalPilot creates a tracking card first. Recommendation, readiness, fields, and questions appear after browser observation.
             </p>
           </div>
           <div className="form-stack">
@@ -91,7 +96,7 @@ export function DashboardClient() {
             <div className="button-row">
               <button className="btn" onClick={submit} disabled={submitting || description.length < 8}>
                 {submitting ? <Loader2 size={17} className="loading" /> : <Send size={17} />}
-                Run filing agent
+                Create tracking card
               </button>
               <Link className="btn secondary" href="/actions">
                 Open inbox <ArrowRight size={17} />
