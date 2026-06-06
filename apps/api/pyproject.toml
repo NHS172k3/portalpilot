@@ -1,0 +1,23 @@
+[project]
+name = "portalpilot-api"
+version = "0.1.0"
+description = "FastAPI backend for PortalPilot"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.0",
+  "psycopg[binary]>=3.2.0",
+  "pypdf>=5.5.0",
+  "python-multipart>=0.0.20",
+  "uvicorn[standard]>=0.34.0",
+  "pydantic-settings>=2.7.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.0",
+  "httpx>=0.28.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
