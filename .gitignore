@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+node_modules/
+.pnpm-store/
+.next/
+out/
+dist/
+coverage/
+.pytest_cache/
+.ruff_cache/
+.uv-cache/
+__pycache__/
+*.pyc
+.venv/
+.vercel/
+.railway/

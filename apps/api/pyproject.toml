@@ -1,0 +1,27 @@
+[project]
+name = "portalpilot-api"
+version = "0.1.0"
+description = "PortalPilot FastAPI backend"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "pydantic>=2.8.0",
+  "pydantic-settings>=2.4.0",
+  "openai>=1.93.0",
+  "supabase>=2.5.0",
+  "python-multipart>=0.0.9",
+  "openai-agents>=0.17.4",
+  "playwright>=1.60.0",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.27.0",
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.23.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

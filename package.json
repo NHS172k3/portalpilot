@@ -1,0 +1,12 @@
+{
+  "name": "portalpilot",
+  "private": true,
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "dev:clean": "pnpm --filter web dev:clean",
+    "build": "pnpm --filter web build",
+    "lint": "pnpm --filter web lint",
+    "clean:web": "pnpm --filter web clean"
+  }
+}
